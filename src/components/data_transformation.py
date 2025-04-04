@@ -1,102 +1,124 @@
-from data_ingestion import data
-print(data.head())
-#finding the duplicate 
-print(data.isna().sum())
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor, AdaBoostRegressor
-from sklearn.svm import SVR
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.model_selection import RandomizedSearchCV
-from catboost import CatBoostRegressor
-from xgboost import XGBRegressor
-import warnings
-from sklearn.model_selection import train_test_split
-import numpy as np
+import sys
+from dataclasses import dataclass
+import os
+import numpy as np 
 import pandas as pd
-
-X = data.drop(columns=['math_score'],axis=1)
-y=data['math_score']
-
-num_features = [feature for feature in X.columns if X[feature].dtype!='O']
-cat_features = [feature for feature in X.columns if X[feature].dtype=='O']
-
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
-
-## we are making a pipeline here as in, this should first do the one hot encoding and the standardisation as one hot encoding will only happen for categoical features 
-numeric_transformer = StandardScaler()
-one_hot_transformer = OneHotEncoder()
-
-preprocessor = ColumnTransformer(
-    [
-        ("OneHotEncoder", one_hot_transformer, cat_features),
-        ("StandardScaler", numeric_transformer, num_features),
-    ]
-)
-
-X = preprocessor.fit_transform(X)
-
-# Seperate the dataset into train and test data 
-X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.2,random_state=42)
-
-def evaluate_model(true, predicted):
-    mse = mean_squared_error(true,predicted)
-    mae= mean_absolute_error(true, predicted)
-    rmse = np.sqrt(mean_squared_error(true,predicted))
-    r2_square = r2_score(true, predicted)
-    return mse, mae, rmse, r2_square
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder,StandardScaler
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from exception import CustomException
+from logger import logging
 
 
-models = {
-    "Linear Regression" : LinearRegression(),
-    "Lasso" : Lasso(),
-    "Ridge" : Ridge(),
-    "K-Neighbors Regressor" : KNeighborsRegressor(),
-    "Decision Tree": DecisionTreeRegressor(),
-    "Random Forest" : RandomForestRegressor(),
-    "XGBRegressor" : XGBRegressor(),
-    "CatBoostRegressor ": CatBoostRegressor(verbose=False),
-    "AdaBoostRegressor": AdaBoostRegressor()
-}
+from utils import save_object
 
-model_list = []
-r2_list = []
+@dataclass
+class DataTransformationConfig:
+    preprocessor_obj_file_path=os.path.join('artifacts',"proprocessor.pkl")
 
-for i in range(len(list(models))):
-    model = list(models.values())[i]
-    model.fit(X_train,y_train) #train_model
+class DataTransformation:
+    def __init__(self):
+        self.data_transformation_config=DataTransformationConfig()
 
-    #make prediction
-    y_train_pred = model.predict(X_train)
-    y_test_pred = model.predict(X_test)
+    def get_data_transformer_object(self):
+        '''
+        This function si responsible for data trnasformation
+        
+        '''
+        try:
+            numerical_columns = ["writing_score", "reading_score"]
+            categorical_columns = [
+                "gender",
+                "race_ethnicity",
+                "parental_level_of_education",
+                "lunch",
+                "test_preparation_course",
+            ]
 
-    #evaluate test and train dataset
+            num_pipeline= Pipeline(
+                steps=[
+                ("imputer",SimpleImputer(strategy="median")),
+                ("scaler",StandardScaler())
 
-    model_train_mse, model_train_mae, model_train_rmse, model_train_r2_score = evaluate_model(y_train,y_train_pred)
-    model_test_mse, model_test_mae, model_test_rmse, model_test_r2_score = evaluate_model(y_test,y_test_pred)
+                ]
+            )
 
-    print(list(models.keys())[i])
-    model_list.append(list(models.keys())[i])
+            cat_pipeline=Pipeline(
 
-    print('Model performance for training set')
-    print(" - Root mean square error : {: .4f}".format(model_train_rmse))
-    print(" - Root mean absolure error : {: .4f}".format(model_train_mae))
-    print(" - R2 Score : {: .4f}".format(model_train_mae))
+                steps=[
+                ("imputer",SimpleImputer(strategy="most_frequent")),
+                ("one_hot_encoder",OneHotEncoder()),
+                ("scaler",StandardScaler(with_mean=False))
+                ]
 
-    print('Model performance for testing set')
-    print(" - Root mean square error : {: .4f}".format(model_test_rmse))
-    print(" - Root mean absolure error : {: .4f}".format(model_test_mae))
-    print(" - R2 Score : {: .4f}".format(model_test_mae))
+            )
 
-    r2_list.append(model_test_r2_score)
+            logging.info(f"Categorical columns: {categorical_columns}")
+            logging.info(f"Numerical columns: {numerical_columns}")
+
+            preprocessor=ColumnTransformer(
+                [
+                ("num_pipeline",num_pipeline,numerical_columns),
+                ("cat_pipelines",cat_pipeline,categorical_columns)
+
+                ]
 
 
-print(pd.DataFrame(list(zip(model_list,r2_list)),columns=['Model Name', 'R2 Score']).sort_values(by='R2 Score',ascending=False))
+            )
 
-print("\n \n Accuracy of the model ------------------- ")
-# Accuracy of models 
+            return preprocessor
+        
+        except Exception as e:
+            raise CustomException(e,sys)
+        
+    def initiate_data_transformation(self,train_path,test_path):
 
-print(pd.DataFrame(list(zip(model_list,[r2*100 for r2 in r2_list])),columns=['Model Name', 'Accuracy']).sort_values(by='Accuracy',ascending=False))
+        try:
+            train_df=pd.read_csv(train_path)
+            test_df=pd.read_csv(test_path)
 
+            logging.info("Read train and test data completed")
+
+            logging.info("Obtaining preprocessing object")
+
+            preprocessing_obj=self.get_data_transformer_object()
+
+            target_column_name="math_score"
+            numerical_columns = ["writing_score", "reading_score"]
+
+            input_feature_train_df=train_df.drop(columns=[target_column_name],axis=1)
+            target_feature_train_df=train_df[target_column_name]
+
+            input_feature_test_df=test_df.drop(columns=[target_column_name],axis=1)
+            target_feature_test_df=test_df[target_column_name]
+
+            logging.info(
+                f"Applying preprocessing object on training dataframe and testing dataframe."
+            )
+
+            input_feature_train_arr=preprocessing_obj.fit_transform(input_feature_train_df)
+            input_feature_test_arr=preprocessing_obj.transform(input_feature_test_df)
+
+            train_arr = np.c_[
+                input_feature_train_arr, np.array(target_feature_train_df)
+            ]
+            test_arr = np.c_[input_feature_test_arr, np.array(target_feature_test_df)]
+
+            logging.info(f"Saved preprocessing object.")
+
+            save_object(
+
+                file_path=self.data_transformation_config.preprocessor_obj_file_path,
+                obj=preprocessing_obj
+
+            )
+
+            return (
+                train_arr,
+                test_arr,
+                self.data_transformation_config.preprocessor_obj_file_path,
+            )
+        except Exception as e:
+            raise CustomException(e,sys)
